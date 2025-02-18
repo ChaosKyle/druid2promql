@@ -8,13 +8,17 @@ def parse_druid_query(druid_query: str):
         return None, None, None
     
     metrics_raw, table = match.groups()
-    metrics = [m.strip() for m in metrics_raw.split(',') if 'TIME_FLOOR' not in m and 'AS time_bucket' not in m]
+    # Exclude both time bucket and non-aggregated columns
+    metrics = [m.strip() for m in metrics_raw.split(',') 
+              if 'TIME_FLOOR' not in m 
+              and 'AS time_bucket' not in m
+              and not re.match(r'^\w+$', m.strip())]
     
     where_match = re.search(r'WHERE\s+(.+?)\s+(GROUP BY|ORDER BY|$)', druid_query, re.IGNORECASE)
     filters = where_match.group(1) if where_match else ""
     
     group_by_match = re.search(r'TIME_FLOOR\(([^,]+),\s*INTERVAL\s+([^)]+)\)', druid_query, re.IGNORECASE)
-    interval = group_by_match.group(2) if group_by_match else ""
+    interval = group_by_match.group(2).strip("'") if group_by_match else ""
     
     return metrics, filters, interval
 
@@ -23,7 +27,10 @@ def convert_filters_to_promql(filters: str) -> str:
     if not filters:
         return ""
     filters = re.sub(r'=', r'==', filters)  # Convert SQL '=' to PromQL '=='
-    filters = re.sub(r'IN\s*\((.*?)\)', lambda m: "=~'" + "|".join(m.group(1).replace("'", "").split(",")) + "'", filters, flags=re.IGNORECASE)  # Convert IN to regex
+    filters = re.sub(r'IN\s*\((.*?)\)', 
+                    lambda m: "=~'" + "|".join(x.strip().strip("'") for x in m.group(1).split(",")) + "'", 
+                    filters, 
+                    flags=re.IGNORECASE)  # Convert IN to regex
     filters = re.sub(r'AND', r',', filters, flags=re.IGNORECASE)  # Convert AND to ,
     filters = re.sub(r'__time\s*[><=]+\s*CURRENT_TIMESTAMP[^,}]*', '', filters, flags=re.IGNORECASE)  # Remove time-based filters
     filters = filters.strip().strip(',')  # Remove leading/trailing commas
@@ -38,10 +45,7 @@ def convert_metrics_to_promql(metrics: list, filters: str, interval: str) -> str
             agg_function, metric_name, alias = agg_match.groups()
             promql_agg = f"{agg_function.lower()}_over_time"
             promql_query = f'{alias}: {promql_agg}({metric_name}{filters}[{interval}])'
-        else:
-            raw_metric = metric.split(' AS ')[-1].strip()
-            promql_query = f'{raw_metric}: {raw_metric}{filters}'
-        promql_queries.append(promql_query)
+            promql_queries.append(promql_query)
     return "\n".join(promql_queries)
 
 def druid_to_promql(druid_query: str) -> str:
