@@ -8,12 +8,12 @@ def parse_druid_query(druid_query: str):
         return None, None, None
     
     metrics_raw, table = match.groups()
-    metrics = [m.strip() for m in metrics_raw.split(',')]
+    metrics = [m.strip() for m in metrics_raw.split(',') if 'TIME_FLOOR' not in m]
     
     where_match = re.search(r'WHERE\s+(.+?)\s+(GROUP BY|ORDER BY|$)', druid_query, re.IGNORECASE)
     filters = where_match.group(1) if where_match else ""
     
-    group_by_match = re.search(r'GROUP BY\s+TIME_FLOOR\(([^,]+),\s*INTERVAL\s+([^)]+)\)', druid_query, re.IGNORECASE)
+    group_by_match = re.search(r'TIME_FLOOR\(([^,]+),\s*INTERVAL\s+([^)]+)\)', druid_query, re.IGNORECASE)
     interval = group_by_match.group(2) if group_by_match else ""
     
     return metrics, filters, interval
@@ -25,7 +25,8 @@ def convert_filters_to_promql(filters: str) -> str:
     filters = re.sub(r'=', r'==', filters)  # Convert SQL '=' to PromQL '=='
     filters = re.sub(r'IN\s*\((.*?)\)', lambda m: "=~'" + "|".join(m.group(1).replace("'", "").split(",")) + "'", filters, flags=re.IGNORECASE)  # Convert IN to regex
     filters = re.sub(r'AND', r',', filters, flags=re.IGNORECASE)  # Convert AND to ,
-    return f'{{{filters}}}'
+    filters = re.sub(r'__time\s*[><=]+\s*CURRENT_TIMESTAMP[^,}]*', '', filters, flags=re.IGNORECASE)  # Remove time-based filters
+    return f'{{{filters.strip()}}}' if filters.strip() else ""
 
 def convert_metrics_to_promql(metrics: list, filters: str, interval: str) -> str:
     """Converts Druid SQL metrics to PromQL queries."""
