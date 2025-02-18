@@ -15,7 +15,7 @@ Ensure you have **Python 3.7+** installed. Clone the repository and install depe
 
 ```sh
 # Clone the repository
-
+git clone https://github.com/ChaosKyle/druid2promql.git
 cd druid2promql
 
 # Install dependencies (if required)
