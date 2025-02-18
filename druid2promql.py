@@ -1,49 +1,55 @@
 import argparse
 import re
 
+def parse_druid_query(druid_query: str):
+    """Parses a Druid SQL query and extracts metrics, filters, and groupings."""
+    match = re.search(r'SELECT\s+(.+?)\s+FROM\s+(\w+)', druid_query, re.IGNORECASE)
+    if not match:
+        return None, None, None
+    
+    metrics_raw, table = match.groups()
+    metrics = [m.strip() for m in metrics_raw.split(',')]
+    
+    where_match = re.search(r'WHERE\s+(.+?)\s+(GROUP BY|ORDER BY|$)', druid_query, re.IGNORECASE)
+    filters = where_match.group(1) if where_match else ""
+    
+    group_by_match = re.search(r'GROUP BY\s+TIME_FLOOR\(([^,]+),\s*INTERVAL\s+([^)]+)\)', druid_query, re.IGNORECASE)
+    interval = group_by_match.group(2) if group_by_match else ""
+    
+    return metrics, filters, interval
+
+def convert_filters_to_promql(filters: str) -> str:
+    """Converts SQL-style filters to PromQL filters."""
+    if not filters:
+        return ""
+    filters = re.sub(r'=', r'==', filters)  # Convert SQL '=' to PromQL '=='
+    filters = re.sub(r'IN\s*\((.*?)\)', lambda m: "=~'" + "|".join(m.group(1).replace("'", "").split(",")) + "'", filters, flags=re.IGNORECASE)  # Convert IN to regex
+    filters = re.sub(r'AND', r',', filters, flags=re.IGNORECASE)  # Convert AND to ,
+    return f'{{{filters}}}'
+
+def convert_metrics_to_promql(metrics: list, filters: str, interval: str) -> str:
+    """Converts Druid SQL metrics to PromQL queries."""
+    promql_queries = []
+    for metric in metrics:
+        agg_match = re.search(r'(SUM|AVG|MAX|MIN|COUNT)\((\w+)\)\s+AS\s+(\w+)', metric, re.IGNORECASE)
+        if agg_match:
+            agg_function, metric_name, alias = agg_match.groups()
+            promql_agg = f"{agg_function.lower()}_over_time"
+            promql_query = f'{alias}: {promql_agg}({metric_name}{filters}[{interval}])'
+        else:
+            raw_metric = metric.split(' AS ')[-1].strip()
+            promql_query = f'{raw_metric}: {raw_metric}{filters}'
+        promql_queries.append(promql_query)
+    return "\n".join(promql_queries)
+
 def druid_to_promql(druid_query: str) -> str:
-    """Converts a Druid SQL query into a PromQL query."""
-    # Extract metric name
-    metric_match = re.search(r'SELECT\s+([\w*\s,]+)\s+FROM\s+(\w+)', druid_query, re.IGNORECASE)
-    if metric_match:
-        metrics, table = metric_match.groups()
-        metrics = [m.strip() for m in metrics.split(',')]
-    else:
+    """Main function to convert a Druid SQL query to PromQL."""
+    metrics, filters, interval = parse_druid_query(druid_query)
+    if not metrics:
         return "Invalid query format"
     
-    # Handle basic aggregation functions
-    aggregations = {}
-    for metric in metrics:
-        agg_match = re.search(r'(SUM|AVG|MAX|MIN|COUNT)\((\w+)\)', metric, re.IGNORECASE)
-        if agg_match:
-            agg_function, metric_name = agg_match.groups()
-            aggregations[metric_name] = agg_function.lower()
-        else:
-            aggregations[metric] = ""
-    
-    # Extract filters (WHERE clause)
-    where_clause = re.search(r'WHERE\s+(.+)', druid_query, re.IGNORECASE)
-    filters = ""
-    if where_clause:
-        conditions = where_clause.group(1)
-        conditions = re.sub(r'=', r'==', conditions)  # Convert SQL '=' to PromQL '=='
-        conditions = re.sub(r'AND', r',', conditions, flags=re.IGNORECASE)  # Convert AND to ,
-        filters = f'{{{conditions}}}'
-    
-    # Handle GROUP BY time bucket
-    group_by_match = re.search(r'GROUP BY\s+TIME_FLOOR\(([^,]+),\s*INTERVAL\s+([^)]+)\)', druid_query, re.IGNORECASE)
-    interval = ""
-    if group_by_match:
-        time_column, interval = group_by_match.groups()
-    
-    # Construct PromQL queries for multiple metrics
-    promql_queries = []
-    for metric_name, agg_function in aggregations.items():
-        promql_agg = f"{agg_function}_over_time" if agg_function else ""
-        promql_query = f'{promql_agg}({metric_name}{filters}[{interval}])' if interval else f'{promql_agg}({metric_name}{filters})'
-        promql_queries.append(promql_query)
-    
-    return "\n".join(promql_queries)
+    promql_filters = convert_filters_to_promql(filters)
+    return convert_metrics_to_promql(metrics, promql_filters, interval)
 
 def main():
     parser = argparse.ArgumentParser(description="Convert Druid SQL queries to PromQL queries.")
